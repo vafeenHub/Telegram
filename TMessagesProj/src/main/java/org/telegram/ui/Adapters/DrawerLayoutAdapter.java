@@ -68,34 +68,41 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     private float startY = -1;
 
     // Use array for fastest access
-    private AbstractItem[] items = new AbstractItem[0];
-    private AbstractItem[] lastItems = new AbstractItem[0];
+    private ArrayList<AbstractItem> items = new ArrayList<>(0);
+    private ArrayList<AbstractItem> lastItems = new ArrayList<>(0);
     private float overscrollThreshold;
     private final View.OnTouchListener touchListener = (v, event) -> {
+
         switch (event.getAction()) {
             case MotionEvent.ACTION_DOWN:
                 startY = event.getY();
                 break;
+
             case MotionEvent.ACTION_MOVE:
-                if (startY != -1) {
+                if (startY != -1 && attachedRecyclerView != null) {
                     float dy = event.getY() - startY;
-                    if (dy > 0) {
-                        // Pulling down
-                        if (!attachedRecyclerView.canScrollVertically(1) && !accountsShown) {
+
+                    if (!accountsShown) {
+                        // Потенциально показываем аккаунты: тянем вниз
+                        if (dy > 0 && !attachedRecyclerView.canScrollVertically(1)) {
                             if (dy > overscrollThreshold) {
                                 setAccountsShown(true, true);
-                                startY = -1; // prevent repeated trigger
+                                startY = -1; // блокируем повтор
                             }
                         }
-                    } else if (dy < 0) {
-                        // Pulling up
-                        if (accountsShown) {
-                            setAccountsShown(false, true);
-                            startY = -1;
+                    } else {
+                        // Аккаунты показаны — можно скрывать при движении вверх
+                        if (dy < 0) {
+                            // Добавим небольшой порог, чтобы избежать случайного срабатывания
+                            if (-dy > overscrollThreshold / 2f) {
+                                setAccountsShown(false, true);
+                                startY = -1; // блокируем повтор
+                            }
                         }
                     }
                 }
                 break;
+
             case MotionEvent.ACTION_CANCEL:
             case MotionEvent.ACTION_UP:
                 startY = -1;
@@ -111,7 +118,7 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         accountsShown = UserConfig.getActivatedAccountsCount() > 1 && MessagesController.getGlobalMainSettings().getBoolean("accountsShown", true);
         Theme.createCommonDialogResources(context);
         overscrollThreshold = AndroidUtilities.dp(OVERSCROLL_THRESHOLD_DP);
-        resetItems();
+        items = itemsByState();
     }
 
     private void handleScroll(int dy) {
@@ -139,7 +146,7 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
 
     @Override
     public int getItemCount() {
-        return items.length;
+        return items.size();
     }
 
     @Override
@@ -200,11 +207,6 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
      * for the next DiffUtil comparison.
      */
     public void redrawAdapterData() {
-        resetItems();
-        FullDrawerDiffCallback diffCallback = new FullDrawerDiffCallback(lastItems, items);
-        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(diffCallback, true);
-        lastItems = items.clone();
-
         if (profileCell != null) {
             int currentAccount = UserConfig.selectedAccount;
             profileCell.setUser(
@@ -212,6 +214,10 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
                     accountsShown
             );
         }
+        items = itemsByState();
+        FullDrawerDiffCallback diffCallback = new FullDrawerDiffCallback(lastItems, items);
+        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(diffCallback, true);
+        lastItems = (ArrayList<AbstractItem>) items.clone();
 
         if (attachedRecyclerView != null) {
             attachedRecyclerView.post(() -> diff.dispatchUpdatesTo(DrawerLayoutAdapter.this));
@@ -222,10 +228,10 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     @Override
     public boolean isEnabled(RecyclerView.ViewHolder holder) {
         int position = holder.getAdapterPosition();
-        if (position == RecyclerView.NO_POSITION || position >= items.length) {
+        if (position == RecyclerView.NO_POSITION || position >= items.size()) {
             return false;
         }
-        int viewType = items[position].viewType;
+        int viewType = items.get(position).viewType;
         return viewType == VIEW_TYPE_ACTION || viewType == VIEW_TYPE_ACCOUNT || viewType == VIEW_TYPE_ADD_ACCOUNT;
     }
 
@@ -271,7 +277,7 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
 
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
-        AbstractItem item = items[position];
+        AbstractItem item = items.get(position);
         if (item instanceof ProfileItem) {
             DrawerProfileCell cell = (DrawerProfileCell) holder.itemView;
             int currentAccount = UserConfig.selectedAccount;
@@ -289,15 +295,16 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
 
     @Override
     public int getItemViewType(int position) {
-        return items[position].viewType;
+        return items.get(position).viewType;
     }
 
     public void swapElements(int fromIndex, int toIndex) {
-        if (fromIndex < 0 || toIndex < 0 || fromIndex >= items.length || toIndex >= items.length) {
+        int itemsSize = items.size();
+        if (fromIndex < 0 || toIndex < 0 || fromIndex >= itemsSize || toIndex >= itemsSize) {
             return;
         }
-        AbstractItem from = items[fromIndex];
-        AbstractItem to = items[toIndex];
+        AbstractItem from = items.get(fromIndex);
+        AbstractItem to = items.get(toIndex);
         if (!(from instanceof AccountItem) || !(to instanceof AccountItem)) {
             return;
         }
@@ -312,16 +319,11 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         userConfig1.saveConfig(false);
         userConfig2.saveConfig(false);
 
-        // Swap in array
-        AbstractItem[] newItems = items.clone();
-        newItems[fromIndex] = to;
-        newItems[toIndex] = from;
-        items = newItems;
-
+        Collections.swap(items, fromIndex, toIndex);
         notifyItemMoved(fromIndex, toIndex);
     }
 
-    private void resetItems() {
+    private ArrayList<AbstractItem> itemsByState() {
         int estimatedSize = 15;
         if (accountsShown) {
             estimatedSize += UserConfig.MAX_ACCOUNT_COUNT + 2;
@@ -357,8 +359,7 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
 
         int currentAccount = UserConfig.selectedAccount;
         if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
-            items = tempItems.toArray(new AbstractItem[0]);
-            return;
+            return tempItems;
         }
 
         int eventType = Theme.getEventType();
@@ -458,12 +459,12 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         tempItems.add(new Item(7, LocaleController.getString(R.string.InviteFriends), inviteIcon));
         tempItems.add(new Item(13, LocaleController.getString(R.string.TelegramFeatures), helpIcon));
 
-        items = tempItems.toArray(new AbstractItem[0]);
+        return tempItems;
     }
 
     public boolean click(View view, int position) {
-        if (position < 0 || position >= items.length) return false;
-        AbstractItem item = items[position];
+        if (position < 0 || position >= items.size()) return false;
+        AbstractItem item = items.get(position);
         if (item instanceof Item) {
             Item actionItem = (Item) item;
             if (actionItem.listener != null) {
@@ -475,8 +476,8 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     }
 
     public int getId(int position) {
-        if (position < 0 || position >= items.length) return -1;
-        AbstractItem item = items[position];
+        if (position < 0 || position >= items.size()) return -1;
+        AbstractItem item = items.get(position);
         if (item instanceof Item) {
             return ((Item) item).id;
         }
@@ -484,8 +485,8 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     }
 
     public int getFirstAccountPosition() {
-        for (int i = 0, size = items.length; i < size; i++) {
-            if (items[i] instanceof AccountItem) {
+        for (int i = 0, size = items.size(); i < size; i++) {
+            if (items.get(i) instanceof AccountItem) {
                 return i;
             }
         }
@@ -493,8 +494,8 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     }
 
     public int getLastAccountPosition() {
-        for (int i = items.length - 1; i >= 0; i--) {
-            if (items[i] instanceof AccountItem) {
+        for (int i = items.size() - 1; i >= 0; i--) {
+            if (items.get(i) instanceof AccountItem) {
                 return i;
             }
         }
@@ -502,8 +503,8 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     }
 
     public TLRPC.TL_attachMenuBot getAttachMenuBot(int position) {
-        if (position < 0 || position >= items.length) return null;
-        AbstractItem item = items[position];
+        if (position < 0 || position >= items.size()) return null;
+        AbstractItem item = items.get(position);
         if (item instanceof Item) {
             return ((Item) item).bot;
         }
@@ -511,28 +512,28 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     }
 
     public static class FullDrawerDiffCallback extends DiffUtil.Callback {
-        private final AbstractItem[] oldList;
-        private final AbstractItem[] newList;
+        private final ArrayList<AbstractItem> oldList;
+        private final ArrayList<AbstractItem> newList;
 
-        public FullDrawerDiffCallback(AbstractItem[] oldList, AbstractItem[] newList) {
+        public FullDrawerDiffCallback(ArrayList<AbstractItem> oldList, ArrayList<AbstractItem> newList) {
             this.oldList = oldList;
             this.newList = newList;
         }
 
         @Override
         public int getOldListSize() {
-            return oldList.length;
+            return oldList.size();
         }
 
         @Override
         public int getNewListSize() {
-            return newList.length;
+            return newList.size();
         }
 
         @Override
         public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-            AbstractItem oldItem = oldList[oldItemPosition];
-            AbstractItem newItem = newList[newItemPosition];
+            AbstractItem oldItem = oldList.get(oldItemPosition);
+            AbstractItem newItem = newList.get(newItemPosition);
             if (oldItem.viewType != newItem.viewType) return false;
 
             if (oldItem instanceof Item && newItem instanceof Item) {
@@ -546,8 +547,8 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
 
         @Override
         public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-            AbstractItem oldItem = oldList[oldItemPosition];
-            AbstractItem newItem = newList[newItemPosition];
+            AbstractItem oldItem = oldList.get(oldItemPosition);
+            AbstractItem newItem = newList.get(newItemPosition);
 
             if (oldItem instanceof Item && newItem instanceof Item) {
                 return ((Item) oldItem).areContentsTheSame((Item) newItem);
