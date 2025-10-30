@@ -9,6 +9,7 @@
 package org.telegram.ui.Adapters;
 
 import android.content.Context;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 
@@ -55,9 +56,53 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     private final SideMenultItemAnimator itemAnimator;
     private RecyclerView attachedRecyclerView;
 
+    private static final float OVERSCROLL_THRESHOLD_DP = 48f;
+    private final RecyclerView.OnScrollListener scrollListener = new RecyclerView.OnScrollListener() {
+        @Override
+        public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
+            super.onScrolled(recyclerView, dx, dy);
+            handleScroll(dy);
+        }
+    };
+    // Overscroll state
+    private float startY = -1;
+
     // Use array for fastest access
     private AbstractItem[] items = new AbstractItem[0];
     private AbstractItem[] lastItems = new AbstractItem[0];
+    private float overscrollThreshold;
+    private final View.OnTouchListener touchListener = (v, event) -> {
+        switch (event.getAction()) {
+            case MotionEvent.ACTION_DOWN:
+                startY = event.getY();
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (startY != -1) {
+                    float dy = event.getY() - startY;
+                    if (dy > 0) {
+                        // Pulling down
+                        if (!attachedRecyclerView.canScrollVertically(1) && !accountsShown) {
+                            if (dy > overscrollThreshold) {
+                                setAccountsShown(true, true);
+                                startY = -1; // prevent repeated trigger
+                            }
+                        }
+                    } else if (dy < 0) {
+                        // Pulling up
+                        if (accountsShown) {
+                            setAccountsShown(false, true);
+                            startY = -1;
+                        }
+                    }
+                }
+                break;
+            case MotionEvent.ACTION_CANCEL:
+            case MotionEvent.ACTION_UP:
+                startY = -1;
+                break;
+        }
+        return false;
+    };
 
     public DrawerLayoutAdapter(Context context, SideMenultItemAnimator animator, DrawerLayoutContainer drawerLayoutContainer) {
         mContext = context;
@@ -65,13 +110,55 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         itemAnimator = animator;
         accountsShown = UserConfig.getActivatedAccountsCount() > 1 && MessagesController.getGlobalMainSettings().getBoolean("accountsShown", true);
         Theme.createCommonDialogResources(context);
+        overscrollThreshold = AndroidUtilities.dp(OVERSCROLL_THRESHOLD_DP);
         resetItems();
+    }
+
+    private void handleScroll(int dy) {
+        if (UserConfig.getActivatedAccountsCount() <= 1) {
+            return;
+        }
+
+        boolean scrollingUp = dy < 0;
+        if (scrollingUp && accountsShown) {
+            setAccountsShown(false, true);
+        }
+    }
+
+    public void attachToRecyclerView(RecyclerView recyclerView) {
+        if (attachedRecyclerView != null) {
+            attachedRecyclerView.removeOnScrollListener(scrollListener);
+            attachedRecyclerView.setOnTouchListener(null);
+        }
+        attachedRecyclerView = recyclerView;
+        if (attachedRecyclerView != null) {
+            attachedRecyclerView.addOnScrollListener(scrollListener);
+            attachedRecyclerView.setOnTouchListener(touchListener);
+        }
     }
 
     @Override
     public int getItemCount() {
         return items.length;
     }
+
+    @Override
+    public void onAttachedToRecyclerView(@NotNull RecyclerView recyclerView) {
+        super.onAttachedToRecyclerView(recyclerView);
+        attachToRecyclerView(recyclerView);
+    }
+
+    @Override
+    public void onDetachedFromRecyclerView(@NotNull RecyclerView recyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView);
+        if (attachedRecyclerView != null) {
+            attachedRecyclerView.removeOnScrollListener(scrollListener);
+            attachedRecyclerView.setOnTouchListener(null);
+            attachedRecyclerView = null;
+        }
+        startY = -1;
+    }
+
 
     public void setAccountsShown(boolean value, boolean animated) {
         if (accountsShown == value || itemAnimator.isRunning()) {
@@ -115,8 +202,8 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     public void redrawAdapterData() {
         resetItems();
         FullDrawerDiffCallback diffCallback = new FullDrawerDiffCallback(lastItems, items);
-        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(diffCallback, true); // detectMoves = true for better accuracy
-        lastItems = items.clone(); // fast clone
+        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(diffCallback, true);
+        lastItems = items.clone();
 
         if (profileCell != null) {
             int currentAccount = UserConfig.selectedAccount;
@@ -131,17 +218,6 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         }
     }
 
-    @Override
-    public void onAttachedToRecyclerView(@NotNull RecyclerView recyclerView) {
-        super.onAttachedToRecyclerView(recyclerView);
-        attachedRecyclerView = recyclerView;
-    }
-
-    @Override
-    public void onDetachedFromRecyclerView(@NotNull RecyclerView recyclerView) {
-        super.onDetachedFromRecyclerView(recyclerView);
-        attachedRecyclerView = null;
-    }
 
     @Override
     public boolean isEnabled(RecyclerView.ViewHolder holder) {
@@ -246,10 +322,9 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     }
 
     private void resetItems() {
-        // Estimate initial size to avoid reallocations
-        int estimatedSize = 15; // base items
+        int estimatedSize = 15;
         if (accountsShown) {
-            estimatedSize += UserConfig.MAX_ACCOUNT_COUNT + 2; // accounts + add + divider
+            estimatedSize += UserConfig.MAX_ACCOUNT_COUNT + 2;
         }
         ArrayList<AbstractItem> tempItems = new ArrayList<>(estimatedSize);
 
